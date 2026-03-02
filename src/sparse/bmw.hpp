@@ -140,95 +140,6 @@ namespace ndd {
             return loadTermBlocksIndex();
         }
 
-        // Document management
-        bool addDocument(ndd::idInt doc_id, const SparseVector& vec) {
-            return addDocumentsBatch({{doc_id, vec}});
-        }
-
-        bool addDocumentsBatch(const std::vector<std::pair<ndd::idInt, SparseVector>>& docs) {
-            if(docs.empty()) {
-                return true;
-            }
-
-            std::unique_lock<std::shared_mutex> lock(mutex_);
-
-            MDBX_txn* txn;
-            int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_READWRITE, &txn);
-            if(rc != 0) {
-                LOG_ERROR("Failed to begin transaction: " << mdbx_strerror(rc));
-                return false;
-            }
-
-            try {
-                if(!addDocumentsBatchInternal(txn, docs)) {
-                    mdbx_txn_abort(txn);
-                    return false;
-                }
-
-                rc = mdbx_txn_commit(txn);
-                if(rc != 0) {
-                    LOG_ERROR("Failed to commit initialization transaction: " << mdbx_strerror(rc));
-                    return false;
-                }
-
-                return true;
-            } catch(const std::exception& e) {
-                LOG_ERROR("Failed to add documents batch: " << e.what());
-                mdbx_txn_abort(txn);
-                return false;
-            }
-        }
-
-        bool removeDocument(ndd::idInt doc_id, const SparseVector& vec) {
-            std::unique_lock<std::shared_mutex> lock(mutex_);
-            MDBX_txn* txn;
-            int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_READWRITE, &txn);
-            if(rc != 0) {
-                return false;
-            }
-
-            try {
-                if(!removeDocumentInternal(txn, doc_id, vec)) {
-                    mdbx_txn_abort(txn);
-                    return false;
-                }
-                return mdbx_txn_commit(txn) == 0;
-            } catch(const std::exception& e) {
-                LOG_ERROR("Failed to remove document: " << e.what());
-                mdbx_txn_abort(txn);
-                return false;
-            }
-        }
-
-        bool updateDocument(ndd::idInt doc_id,
-                            const SparseVector& old_vec,
-                            const SparseVector& new_vec) {
-            std::unique_lock<std::shared_mutex> lock(mutex_);
-            MDBX_txn* txn;
-            int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_READWRITE, &txn);
-            if(rc != 0) {
-                return false;
-            }
-
-            try {
-                if(!removeDocumentInternal(txn, doc_id, old_vec)) {
-                    mdbx_txn_abort(txn);
-                    return false;
-                }
-
-                if(!addDocumentsBatchInternal(txn, {{doc_id, new_vec}})) {
-                    mdbx_txn_abort(txn);
-                    return false;
-                }
-
-                return mdbx_txn_commit(txn) == 0;
-            } catch(const std::exception& e) {
-                LOG_ERROR("Failed to update document: " << e.what());
-                mdbx_txn_abort(txn);
-                return false;
-            }
-        }
-
         // Batch operations - Removed empty implementation
 
         // Transaction-aware methods for external orchestration
@@ -238,195 +149,11 @@ namespace ndd {
             return addDocumentsBatchInternal(txn, docs);
         }
 
+        /*XXX: NOT TESTED*/
         bool removeDocument(MDBX_txn* txn, ndd::idInt doc_id, const SparseVector& vec) {
             std::unique_lock<std::shared_mutex> lock(mutex_);
             return removeDocumentInternal(txn, doc_id, vec);
         }
-
-        // Search using BMW algorithm (DAAT
-        std::vector<std::pair<ndd::idInt, float>> search(const SparseVector& query,
-                                                        size_t k,
-                                                        const ndd::RoaringBitmap* filter = nullptr)
-        {
-            if(query.empty() || k == 0) {
-                return {};
-            }
-
-            std::shared_lock<std::shared_mutex> lock(mutex_);
-
-            // Start Read Transaction
-            MDBX_txn* txn;
-            int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_RDONLY, &txn);
-            if(rc != 0) {
-                LOG_ERROR("Failed to begin search transaction: " << mdbx_strerror(rc));
-                return {};
-            }
-
-            // Initialize iterators for all query terms
-            // Use vector for storage to ensure pointer stability (reserve is key)
-            std::vector<BlockIterator> iterators_storage;
-            iterators_storage.reserve(query.indices.size());
-
-            // Pointers for sorting
-            std::vector<BlockIterator*> iterators;
-            iterators.reserve(query.indices.size());
-
-            for(size_t i = 0; i < query.indices.size(); ++i) {
-                auto it = term_blocks_index_.find(query.indices[i]);
-                if(it != term_blocks_index_.end()) {
-                    iterators_storage.emplace_back(
-                            query.indices[i], query.values[i], &it->second, this, txn);
-                }
-            }
-
-            // Initialize pointers
-            for(auto& it : iterators_storage) {
-                iterators.push_back(&it);
-            }
-
-            if(iterators.empty()) {
-                mdbx_txn_abort(txn);
-                return {};
-            }
-
-            std::priority_queue<BMWCandidate> top_k;
-            float threshold = 0.0f;
-
-            // Helper to sort iterators by current doc ID
-            auto sort_iterators = [&]() {
-                if(iterators.size() < 2) {
-                    return;
-                }
-
-                // Requested bubble sort for iterator ordering by current doc id.
-                bool swapped;
-                for(size_t pass = 0; pass + 1 < iterators.size(); ++pass) {
-                    swapped = false;
-                    for(size_t i = 0; i + 1 < iterators.size() - pass; ++i) {
-                        if(iterators[i]->current_doc_id > iterators[i + 1]->current_doc_id) {
-                            std::swap(iterators[i], iterators[i + 1]);
-                            swapped = true;
-                        }
-                    }
-                    if(!swapped) {
-                        break;
-                    }
-                }
-            };
-
-            sort_iterators();
-
-            float remaining_global_upper_bound = 0.0f;
-            for(size_t i = 0; i < iterators.size(); ++i) {
-                remaining_global_upper_bound += iterators[i]->globalUpperBound();
-            }
-
-            while(true) {
-                // Remove exhausted iterators
-                while(!iterators.empty()
-                      && iterators.back()->current_doc_id
-                                 == std::numeric_limits<ndd::idInt>::max()) {
-                    remaining_global_upper_bound -= iterators.back()->globalUpperBound();
-                    iterators.pop_back();
-                }
-
-                if(iterators.empty()) {
-                    break;
-                }
-                if(remaining_global_upper_bound < 0.0f) {
-                    remaining_global_upper_bound = 0.0f;
-                }
-                if(remaining_global_upper_bound <= threshold) {
-                    break;
-                }
-
-                // WAND/BMW logic
-                float upper_bound_sum = 0.0f;
-                size_t pivot_idx = 0;
-                bool found_pivot = false;
-
-                // Find pivot term
-                for(size_t i = 0; i < iterators.size(); ++i) {
-                    upper_bound_sum += iterators[i]->upperBound();
-                    if(upper_bound_sum > threshold) {
-                        pivot_idx = i;
-                        found_pivot = true;
-                        break;
-                    }
-                }
-
-                if(!found_pivot) {
-                    // No document can exceed threshold
-                    break;
-                }
-
-                ndd::idInt pivot_doc_id = iterators[pivot_idx]->current_doc_id;
-
-                if(iterators[0]->current_doc_id == pivot_doc_id) {
-                    if(filter && !filter->contains(pivot_doc_id)) {
-                        // Skip document that doesn't match filter
-                        iterators[0]->next();
-                        for(size_t i = 1; i < iterators.size(); ++i) {
-                            if(iterators[i]->current_doc_id == pivot_doc_id) {
-                                iterators[i]->next();
-                            } else {
-                                break;  // Since sorted
-                            }
-                        }
-                        sort_iterators();
-                        continue;
-                    }
-
-                    // Pivot is the first iterator, so we have a candidate
-                    iterators[0]->advance(pivot_doc_id);  // Should be no-op
-                    float score = iterators[0]->current_score * iterators[0]->term_weight;
-                    iterators[0]->next();
-
-                    // Check other terms
-                    for(size_t i = 1; i < iterators.size(); ++i) {
-                        iterators[i]->advance(pivot_doc_id);
-                        if(iterators[i]->current_doc_id == pivot_doc_id) {
-                            score += iterators[i]->current_score * iterators[i]->term_weight;
-                            iterators[i]->next();
-                        }
-                    }
-
-                    if(top_k.size() < k) {
-                        top_k.emplace(pivot_doc_id, score);
-                        if(top_k.size() == k) {
-                            threshold = top_k.top().score;
-                        }
-                    } else if(score > threshold) {
-                        top_k.pop();
-                        top_k.emplace(pivot_doc_id, score);
-                        threshold = top_k.top().score;
-                    }
-                } else {
-                    // Standard WAND/BMW behavior: advance only the first iterator to the pivot.
-                    iterators[0]->advance(pivot_doc_id);
-                }
-                sort_iterators();
-            }
-
-            // Clean up
-            mdbx_txn_abort(txn);
-
-            // Extract results
-            std::vector<std::pair<ndd::idInt, float>> results;
-            results.reserve(top_k.size());
-
-            while(!top_k.empty()) {
-                const auto& candidate = top_k.top();
-                results.emplace_back(candidate.doc_id, candidate.score);
-                top_k.pop();
-            }
-
-            std::reverse(results.begin(), results.end());
-            return results;
-        }
-
-        // Maintenance
-        // Functions removed as they were empty/unused placeholders
 
         bool splitBlock(MDBX_txn* txn, uint32_t term_id, ndd::idInt start_doc_id) {
             auto& blocks = term_blocks_index_[term_id];
@@ -532,8 +259,6 @@ namespace ndd {
 
         size_t getVocabSize() const { return vocab_size_; }
 
-        /// Search using Qdrant's batched scoring algorithm with single-list pruning.
-        ///
         /// Instead of DAAT pivot-based iteration (WAND), this:
         ///   1. Processes doc IDs in contiguous batches of BATCH_SIZE
         ///   2. Accumulates dot-product scores into a flat array per batch
@@ -1436,17 +1161,17 @@ namespace ndd {
             return idx;
         }
 
-        size_t findEntryIndexGeneric(const void* doc_diffs,
-                                     size_t size,
-                                     size_t start_idx,
-                                     ndd::idInt target_diff,
-                                     uint8_t bits) {
-            // In 32-bit mode, we only expect 32-bit blocks here (16-bit handled by SIMD16)
-            return findEntryIndexSIMD32(static_cast<const uint32_t*>(doc_diffs),
-                                        size,
-                                        start_idx,
-                                        static_cast<uint32_t>(target_diff));
-        }
+        // size_t findEntryIndexGeneric(const void* doc_diffs,
+        //                              size_t size,
+        //                              size_t start_idx,
+        //                              ndd::idInt target_diff,
+        //                              uint8_t bits) {
+        //     // In 32-bit mode, we only expect 32-bit blocks here (16-bit handled by SIMD16)
+        //     return findEntryIndexSIMD32(static_cast<const uint32_t*>(doc_diffs),
+        //                                 size,
+        //                                 start_idx,
+        //                                 static_cast<uint32_t>(target_diff));
+        // }
 
         // Find next non-zero value (live entry)
         size_t findNextLiveSIMD(const uint8_t* values, size_t size, size_t start_idx) {
@@ -1995,12 +1720,12 @@ namespace ndd {
             return {nullptr, nullptr, 0, 0, 0};
         }
 
-        ndd::idInt getBlockEndDocId(const std::vector<BlockIdx>& blocks, size_t block_idx) const {
-            if(block_idx + 1 < blocks.size()) {
-                return blocks[block_idx + 1].start_doc_id - 1;
-            }
-            return std::numeric_limits<ndd::idInt>::max();
-        }
+        // ndd::idInt getBlockEndDocId(const std::vector<BlockIdx>& blocks, size_t block_idx) const {
+        //     if(block_idx + 1 < blocks.size()) {
+        //         return blocks[block_idx + 1].start_doc_id - 1;
+        //     }
+        //     return std::numeric_limits<ndd::idInt>::max();
+        // }
 
         bool addToBlock(MDBX_txn* txn, uint32_t term_id, ndd::idInt doc_id, float value) {
             // Get or create blocks for this term
@@ -2134,8 +1859,6 @@ namespace ndd {
             return false;
         }
 
-        /// Qdrant-style single-list pruning.
-        ///
         /// Finds the longest posting list. If all its remaining elements up to the next
         /// doc_id in other lists cannot beat min_score, skip them.
         ///
