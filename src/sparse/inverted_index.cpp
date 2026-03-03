@@ -508,6 +508,14 @@ namespace ndd {
     // MDBX storage methods
     // =========================================================================
 
+    /**
+     * XXX: Currently, the whole posting list is read to memory at once. This is
+     * suboptimal because it would pollute the cache and could saturate disk thpt
+     * when multiple users are sharing the same servers.
+     *
+     * TODO: Need to understand and test the storage behaviour for different types
+     * of storage and cloud providers.
+     */
     InvertedIndex::PostingListView
     InvertedIndex::getReadOnlyPostingList(MDBX_txn* txn, uint32_t term_id) const
     {

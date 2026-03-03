@@ -28,6 +28,7 @@
 #include <random>
 #include <type_traits>
 #include <future>
+#include <shared_mutex>
 
 #define MAX_BACKUP_NAME_LENGTH 200
 
@@ -1215,7 +1216,9 @@ public:
                 threads.emplace_back([&, t]() {
                     // Calculate start and end indices for this thread
                     size_t start_idx = t * chunk_size;
-                    size_t end_idx = start_idx + 1;
+                    size_t end_idx = (start_idx + chunk_size < quantized_vectors.size())
+                                            ? (start_idx + chunk_size)
+                                            : quantized_vectors.size();
 
                     // Process assigned chunk of vectors
                     for(size_t i = start_idx; i < end_idx; i++) {
@@ -1578,8 +1581,8 @@ public:
 
             // 2. Dense Search (Main Thread)
             std::vector<std::pair<float, ndd::idInt>> dense_results;
-            
-            goto skip_dense;
+
+
             if(!query.empty()) {
                 // Convert query to bytes using the wrapper method
                 ndd::quant::QuantizationLevel quant_level = entry.alg->getQuantLevel();
@@ -1588,7 +1591,7 @@ public:
                         ndd::quant::get_quantizer_dispatch(quant_level).quantize(query);
 
                 if (!active_filter_bitmap) {
-                     dense_results = entry.alg->searchKnn(query_bytes.data(), k, ef);
+                    dense_results = entry.alg->searchKnn(query_bytes.data(), k, ef);
                 } else {
                     // Smart Filter Execution Strategy
                     auto& bitmap = *active_filter_bitmap;
@@ -1634,7 +1637,6 @@ public:
                 }
             }
 
-skip_dense:
             // 3. Get Sparse Results (Join)
             std::vector<std::pair<ndd::idInt, float>> sparse_results;
             if(sparse_future.valid()) {
