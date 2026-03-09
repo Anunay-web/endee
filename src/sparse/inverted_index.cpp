@@ -20,27 +20,7 @@
 
 namespace ndd {
 
-    /*TODO: remove this namespace*/
     namespace {
-        inline bool nearEqual(float a, float b) {
-            return std::fabs(a - b) <= settings::NEAR_ZERO;
-        }
-
-        // Update header counters after a block-level merge/delete without letting them go negative.
-        inline void applyHeaderDelta(PostingListHeader& header,
-                                    int64_t total_delta,
-                                    int64_t live_delta) {
-            int64_t new_total = static_cast<int64_t>(header.nr_entries) + total_delta;
-            int64_t new_live = static_cast<int64_t>(header.nr_live_entries) + live_delta;
-
-            if (new_total < 0) new_total = 0;
-            if (new_live < 0) new_live = 0;
-            if (new_live > new_total) new_live = new_total;
-
-            header.nr_entries = static_cast<uint32_t>(new_total);
-            header.nr_live_entries = static_cast<uint32_t>(new_live);
-        }
-
 #ifdef ND_SPARSE_INSTRUMENT
         using SteadyClock = std::chrono::steady_clock;
 
@@ -262,6 +242,20 @@ namespace ndd {
 
     InvertedIndex::InvertedIndex(MDBX_env* env, size_t vocab_size)
         : env_(env), blocked_term_postings_dbi_(0), vocab_size_(vocab_size) {}
+
+    void InvertedIndex::applyHeaderDelta(PostingListHeader& header,
+                                        int64_t total_delta,
+                                        int64_t live_delta) {
+        int64_t new_total = static_cast<int64_t>(header.nr_entries) + total_delta;
+        int64_t new_live = static_cast<int64_t>(header.nr_live_entries) + live_delta;
+
+        if (new_total < 0) new_total = 0;
+        if (new_live < 0) new_live = 0;
+        if (new_live > new_total) new_live = new_total;
+
+        header.nr_entries = static_cast<uint32_t>(new_total);
+        header.nr_live_entries = static_cast<uint32_t>(new_live);
+    }
 
     bool InvertedIndex::initialize() {
         std::unique_lock<std::shared_mutex> lock(mutex_);

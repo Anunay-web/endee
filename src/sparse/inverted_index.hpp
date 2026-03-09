@@ -113,6 +113,9 @@ namespace ndd {
 
         static inline uint8_t quantize(float val, float max_val);
         static inline float dequantize(uint8_t val, float max_val);
+        static inline bool nearEqual(float a, float b) {
+            return std::fabs(a - b) <= settings::NEAR_ZERO;
+        }
 
         // Key packing is term_id in high 32 bits and block_nr in low 32 bits.
         // This keeps all keys for a term contiguous so range scans can seek to
@@ -296,6 +299,10 @@ namespace ndd {
             const std::function<bool(uint32_t block_nr, const MDBX_val& data)>& callback) const;
 
         float recomputeGlobalMaxFromBlocks(MDBX_txn* txn, uint32_t term_id) const;
+
+        static void applyHeaderDelta(PostingListHeader& header,
+                                     int64_t total_delta,
+                                     int64_t live_delta);
 
         bool loadTermInfo();
 
