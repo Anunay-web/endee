@@ -40,7 +40,7 @@ namespace ndd {
     // Header that prefixes each on-disk (term_id, block_nr) payload.
     struct BlockHeader {
         uint16_t nr_entries = 0;
-        uint16_t nr_live_entries = 0;
+        uint16_t nr_live_in_block = 0;
         float max_value = 0.0f;
     };
 
@@ -287,7 +287,7 @@ namespace ndd {
                             uint32_t term_id,
                             uint32_t block_nr,
                             std::vector<PostingListEntry>* entries,
-                            uint32_t* out_live_count,
+                            uint32_t* out_live_in_block,
                             float* out_max_value,
                             bool* out_found) const;
 
@@ -295,7 +295,7 @@ namespace ndd {
                             uint32_t term_id,
                             uint32_t block_nr,
                             const std::vector<PostingListEntry>& entries,
-                            uint32_t live_count,
+                            uint32_t live_in_block,
                             float max_val);
 
         bool deleteBlock(MDBX_txn* txn, uint32_t term_id, uint32_t block_nr);

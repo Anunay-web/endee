@@ -1018,12 +1018,12 @@ namespace ndd {
                                         uint32_t term_id,
                                         uint32_t block_nr,
                                         std::vector<PostingListEntry>* entries,
-                                        uint32_t* out_live_count,
+                                        uint32_t* out_live_in_block,
                                         float* out_max_value,
                                         bool* out_found) const
     {
         if (entries) entries->clear();
-        if (out_live_count) *out_live_count = 0;
+        if (out_live_in_block) *out_live_in_block = 0;
         if (out_max_value) *out_max_value = 0.0f;
         if (out_found) *out_found = false;
 
@@ -1053,7 +1053,7 @@ namespace ndd {
         }
 
         const BlockHeader* header = (const BlockHeader*)data.iov_base;
-        if (out_live_count) *out_live_count = header->nr_live_entries;
+        if (out_live_in_block) *out_live_in_block = header->nr_live_in_block;
         if (out_max_value) *out_max_value = header->max_value;
         if (out_found) *out_found = true;
 
@@ -1089,7 +1089,7 @@ namespace ndd {
                                         uint32_t term_id,
                                         uint32_t block_nr,
                                         const std::vector<PostingListEntry>& entries,
-                                        uint32_t live_count,
+                                        uint32_t live_in_block,
                                         float max_val)
     {
         if (term_id == kMetadataTermId || block_nr == kMetadataBlockNr) {
@@ -1109,7 +1109,7 @@ namespace ndd {
 
         BlockHeader header;
         header.nr_entries = (uint16_t)entries.size();
-        header.nr_live_entries = (uint16_t)live_count;
+        header.nr_live_in_block = (uint16_t)live_in_block;
         header.max_value = max_val;
 
 #if defined(NDD_INV_IDX_STORE_FLOATS)
@@ -1401,7 +1401,7 @@ namespace ndd {
                     deduped.begin() + block_begin, deduped.begin() + ui);
 
                 std::vector<PostingListEntry> existing;
-                uint32_t old_live_count = 0;
+                uint32_t old_live_in_block = 0;
                 float old_block_max = 0.0f;
                 bool block_found = false;
 
@@ -1412,7 +1412,7 @@ namespace ndd {
                                                 term_id,
                                                 block_nr,
                                                 &existing,
-                                                &old_live_count,
+                                                &old_live_in_block,
                                                 &old_block_max,
                                                 &block_found);
 #ifdef ND_SPARSE_INSTRUMENT
@@ -1462,11 +1462,11 @@ namespace ndd {
                     bi++;
                 }
 
-                uint32_t new_live_count = 0;
+                uint32_t new_live_in_block = 0;
                 float new_block_max = 0.0f;
                 for (const auto& e : merged) {
                     if (e.value > 0.0f) {
-                        new_live_count++;
+                        new_live_in_block++;
                         if (e.value > new_block_max) new_block_max = e.value;
                     }
                     //TODO: Delete an entry if e.value == 0
@@ -1489,8 +1489,8 @@ namespace ndd {
                 uint32_t new_total = static_cast<uint32_t>(merged.size());
                 applyHeaderDelta(header,
                                 static_cast<int64_t>(new_total) - static_cast<int64_t>(old_total),
-                                static_cast<int64_t>(new_live_count)
-                                    - static_cast<int64_t>(old_live_count));
+                                static_cast<int64_t>(new_live_in_block)
+                                    - static_cast<int64_t>(old_live_in_block));
 
                 if (merged.empty()) {
                     if (!deleteBlock(txn, term_id, block_nr)) return false;
@@ -1502,7 +1502,7 @@ namespace ndd {
                                                     term_id,
                                                     block_nr,
                                                     merged,
-                                                    new_live_count,
+                                                    new_live_in_block,
                                                     new_block_max);
 #ifdef ND_SPARSE_INSTRUMENT
                     update_stats.save_block_calls.fetch_add(1, std::memory_order_relaxed);
@@ -1592,7 +1592,7 @@ namespace ndd {
             uint32_t block_nr = docToBlockNr(doc_id);
 
             std::vector<PostingListEntry> entries;
-            uint32_t old_live_count = 0;
+            uint32_t old_live_in_block = 0;
             float old_block_max = 0.0f;
             bool block_found = false;
 
@@ -1600,7 +1600,7 @@ namespace ndd {
                                 term_id,
                                 block_nr,
                                 &entries,
-                                &old_live_count,
+                                &old_live_in_block,
                                 &old_block_max,
                                 &block_found)) {
                 return false;
@@ -1630,11 +1630,11 @@ namespace ndd {
             // is high enough to justify compacting the block in place.
             entries[lo].value = 0.0f;
 
-            uint32_t new_live_count = old_live_count > 0 ? old_live_count - 1 : 0;
+            uint32_t new_live_in_block = old_live_in_block > 0 ? old_live_in_block - 1 : 0;
             uint32_t old_total = static_cast<uint32_t>(entries.size());
 
             float tombstone_ratio = old_total > 0
-                ? (float)(old_total - new_live_count) / (float)old_total
+                ? (float)(old_total - new_live_in_block) / (float)old_total
                 : 0.0f;
 
             if (tombstone_ratio >= settings::INV_IDX_COMPACTION_TOMBSTONE_RATIO) {
@@ -1648,11 +1648,11 @@ namespace ndd {
                 entries.resize(write);
             }
 
-            new_live_count = 0;
+            new_live_in_block = 0;
             float new_block_max = 0.0f;
             for (const auto& e : entries) {
                 if (e.value > 0.0f) {
-                    new_live_count++;
+                    new_live_in_block++;
                     if (e.value > new_block_max) new_block_max = e.value;
                 }
             }
@@ -1660,8 +1660,8 @@ namespace ndd {
             uint32_t new_total = static_cast<uint32_t>(entries.size());
             applyHeaderDelta(header,
                             static_cast<int64_t>(new_total) - static_cast<int64_t>(old_total),
-                            static_cast<int64_t>(new_live_count)
-                                - static_cast<int64_t>(old_live_count));
+                            static_cast<int64_t>(new_live_in_block)
+                                - static_cast<int64_t>(old_live_in_block));
 
             bool need_recompute_max = false;
             if (old_block_max > 0.0f && nearEqual(old_block_max, header.max_value)
@@ -1676,7 +1676,7 @@ namespace ndd {
                                     term_id,
                                     block_nr,
                                     entries,
-                                    new_live_count,
+                                    new_live_in_block,
                                     new_block_max)) {
                     return false;
                 }
