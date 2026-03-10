@@ -298,6 +298,8 @@ namespace ndd {
 
             // Fresh database — write the superblock.
             sb.format_version = settings::SPARSE_ONDISK_VERSION;
+            LOG_INFO("Writing fresh sparse superblock (version="
+                     << (int)settings::SPARSE_ONDISK_VERSION << ")");
             if (!writeSuperBlock(txn, sb)) {
                 return false;
             }
@@ -349,7 +351,12 @@ namespace ndd {
             return false;
         }
 
-        return loadTermInfo();
+        if (!loadTermInfo()) {
+            return false;
+        }
+
+        LOG_INFO("Sparse index initialized: " << term_info_.size() << " terms loaded");
+        return true;
     }
 
     bool InvertedIndex::addDocumentsBatch(
@@ -488,8 +495,10 @@ namespace ndd {
 
 
             auto info_it = term_info_.find(term_id);
-            /*TODO: print a warning that term_id wasn't found*/
-            if (info_it == term_info_.end()) continue;
+            if (info_it == term_info_.end()) {
+                LOG_WARN("search: query term_id=" << term_id << " not in term_info_, skipping");
+                continue;
+            }
 
             bool header_found = false;
             PostingListHeader header = readPostingListHeader(txn, term_id, &header_found);
@@ -500,6 +509,8 @@ namespace ndd {
             MDBX_cursor* cursor = nullptr;
             rc = mdbx_cursor_open(txn, blocked_term_postings_dbi_, &cursor);
             if (rc != MDBX_SUCCESS) {
+                LOG_ERROR("search: mdbx_cursor_open failed for term " << term_id
+                          << ": " << mdbx_strerror(rc));
                 continue;
             }
 
@@ -1305,6 +1316,7 @@ namespace ndd {
 
         mdbx_cursor_close(cursor);
         mdbx_txn_abort(txn);
+        LOG_INFO("loadTermInfo: loaded " << term_info_.size() << " active terms");
         return true;
     }
 
@@ -1468,9 +1480,13 @@ namespace ndd {
                     if (e.value > 0.0f) {
                         new_live_in_block++;
                         if (e.value > new_block_max) new_block_max = e.value;
+                    } else if (e.value == 0.0f) {
+                        LOG_WARN("addDocumentsBatch: zero value for term " << term_id
+                                 << ", entry will be treated as deleted");
+                    } else {
+                        LOG_WARN("addDocumentsBatch: negative value " << e.value
+                                 << " for term " << term_id << ", treating as dead");
                     }
-                    //TODO: Delete an entry if e.value == 0
-                    //TODO: print a NOTSUPPORTED warning if e.value < 0 
                 }
 
 #ifdef ND_SPARSE_INSTRUMENT

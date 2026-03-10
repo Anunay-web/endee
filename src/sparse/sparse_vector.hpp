@@ -4,6 +4,7 @@
 #include <cstring>
 #include <stdexcept>
 #include "mdbx/mdbx.h"
+#include "../utils/log.hpp"
 
 namespace ndd {
 
@@ -52,8 +53,9 @@ namespace ndd {
                 for(size_t i = 0; i < nr_nonzero; ++i) {
                     values[i] = fp16_to_float(fp16_values[i]);
                 }
+            } else {
+                LOG_WARN("SparseVector: deserialized vector with nr_nonzero=0");
             }
-            //Else throw an error. nr_nonzero cannot be 0
         }
 
         // Convenience constructors
