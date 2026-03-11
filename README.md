@@ -42,7 +42,7 @@ If you want the fastest path to evaluate Endee locally, start with the [Getting 
 
 ## Getting Started
 
-The full installation, build, Docker, runtime, and authentication instructions now live in [docs/getting-started.md](./docs/getting-started.md).
+The full installation, build, Docker, runtime, and authentication instructions are in [docs/getting-started.md](./docs/getting-started.md).
 
 Fastest local path:
 
@@ -62,6 +62,10 @@ The server listens on port `8080`. For detailed setup paths, supported operating
 ### RAG and AI Retrieval
 
 Use Endee as the retrieval layer for question answering, chat assistants, copilots, and other RAG applications that need fast vector search with metadata-aware filtering.
+
+### Agentic AI and AI Agent Memory
+
+Use Endee as the long-term memory and context retrieval layer for AI agents built with frameworks like LangChain, CrewAI, AutoGen, and LlamaIndex. Store and retrieve past observations, tool outputs, conversation history, and domain knowledge mid-execution with low-latency filtered vector search, so your autonomous agents get the right context without stalling their reasoning loop.
 
 ### Semantic Search
 
