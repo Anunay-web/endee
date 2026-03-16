@@ -1944,16 +1944,8 @@ inline std::pair<bool, std::string> IndexManager::restoreBackup(const std::strin
         new_meta.space_type_str = meta_json["params"]["space_type"];
         new_meta.quant_level = static_cast<ndd::quant::QuantizationLevel>(
                 meta_json["params"]["quant_level"].get<int>());
-        if(!meta_json["params"].contains("sparse_model")) {
-            throw std::runtime_error(
-                    "Incompatible backup metadata: missing sparse_model. Recreate the backup.");
-        }
         const auto sparse_model = ndd::sparseScoringModelFromString(
                 meta_json["params"]["sparse_model"].get<std::string>());
-        if(!sparse_model.has_value()) {
-            throw std::runtime_error(
-                    "Incompatible backup metadata: invalid sparse_model. Recreate the backup.");
-        }
         new_meta.sparse_model = *sparse_model;
         new_meta.created_at = std::chrono::system_clock::now();
         new_meta.total_elements = meta_json["params"].value("total_elements", 0ul);
