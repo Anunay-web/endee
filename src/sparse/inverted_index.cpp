@@ -609,7 +609,6 @@ namespace ndd {
         
 
         bool use_pruning = (iters.size() > 1);
-        use_pruning = false;
         float best_min_score = 0.0f;
 
         std::vector<float> scores_buf(settings::INV_IDX_SEARCH_BATCH_SZ, 0.0f);
