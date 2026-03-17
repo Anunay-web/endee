@@ -56,6 +56,8 @@ namespace settings {
     constexpr size_t DEFAULT_METADATA_MAP_SIZE_MAX_BITS = 39;   // 512 GiB
     constexpr size_t DEFAULT_VECTOR_MAP_SIZE_BITS = 30;         // 1 GiB
     constexpr size_t DEFAULT_VECTOR_MAP_SIZE_MAX_BITS = 42;     // 4 TiB
+    // Sparse storage
+    constexpr size_t DEFAULT_SPARSE_MAP_SIZE_MAX_BITS = 40;    // 1 TiB
 
     constexpr size_t MAX_LINK_LIST_LOCKS = 65536;
 
@@ -247,6 +249,10 @@ namespace settings {
         const char* env = std::getenv("NDD_VECTOR_MAP_SIZE_MAX_BITS");
         return env ? std::stoull(env) : DEFAULT_VECTOR_MAP_SIZE_MAX_BITS;
     }();
+    inline static size_t SPARSE_MAP_SIZE_MAX_BITS = [] {
+        const char* env = std::getenv("NDD_SPARSE_MAP_SIZE_MAX_BITS");
+        return env ? std::stoull(env) : DEFAULT_SPARSE_MAP_SIZE_MAX_BITS;
+    }();
 
     // Function to get all settings values as a multiline string
     inline std::string getAllSettingsAsString() {
@@ -277,6 +283,7 @@ namespace settings {
         oss << "METADATA_MAP_SIZE_MAX_BITS: " << METADATA_MAP_SIZE_MAX_BITS << "\n";
         oss << "VECTOR_MAP_SIZE_BITS: " << VECTOR_MAP_SIZE_BITS << "\n";
         oss << "VECTOR_MAP_SIZE_MAX_BITS: " << VECTOR_MAP_SIZE_MAX_BITS << "\n";
+        oss << "SPARSE_MAP_SIZE_MAX_BITS: " << SPARSE_MAP_SIZE_MAX_BITS << "\n";
         oss << "\n=== End Settings ===\n";
         return oss.str();
     }
