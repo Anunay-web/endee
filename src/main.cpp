@@ -231,6 +231,7 @@ int main(int argc, char** argv) {
         LOG_ERROR(1004, "CPU is not compatible; server startup aborted");
         return 0;
     }
+
     LOG_INFO("SERVER_ID: " << settings::SERVER_ID);
     LOG_INFO("SERVER_PORT: " << settings::SERVER_PORT);
     LOG_INFO("DATA_DIR: " << settings::DATA_DIR);
@@ -246,7 +247,7 @@ int main(int argc, char** argv) {
     LOG_INFO("DEFAULT_MAX_ELEMENTS: " << settings::DEFAULT_MAX_ELEMENTS);
     LOG_INFO("DEFAULT_MAX_ELEMENTS_INCREMENT: " << settings::DEFAULT_MAX_ELEMENTS_INCREMENT);
     LOG_INFO("DEFAULT_MAX_ELEMENTS_INCREMENT_TRIGGER: "
-              << settings::DEFAULT_MAX_ELEMENTS_INCREMENT_TRIGGER);
+                << settings::DEFAULT_MAX_ELEMENTS_INCREMENT_TRIGGER);
 
     // Path to React build directory
     // Get the executable's directory and resolve frontend/dist relative to it
