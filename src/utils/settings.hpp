@@ -254,7 +254,7 @@ namespace settings {
      * All the startup settings will be checked here.
      * All violations will be returned as errors.
      */
-    inline std::string validateStartupSettings() {
+    inline std::string validateSettings() {
         std::string error;
 
         auto appendValidationError = [&error](const char* env_name,

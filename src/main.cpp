@@ -227,7 +227,7 @@ bool file_exists(const std::string& path) {
 
 int main(int argc, char** argv) {
 
-    const std::string settings_error = settings::validateStartupSettings();
+    const std::string settings_error = settings::validateSettings();
     if(!settings_error.empty()) {
         LOG_ERROR(1065, "Server startup aborted: " << settings_error);
         return 1;
