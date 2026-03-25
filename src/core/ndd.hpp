@@ -1771,15 +1771,22 @@ public:
             size_t processed = state->vectors_processed.load();
             size_t total = state->total_vectors.load();
             double percent = total > 0 ? (100.0 * processed / total) : 0.0;
-            return {{"status", "in_progress"},
-                    {"vectors_processed", processed},
-                    {"total_vectors", total},
-                    {"percent_complete", percent}};
+            nlohmann::json result = {
+                {"status", state->status},
+                {"vectors_processed", processed},
+                {"total_vectors", total},
+                {"percent_complete", percent},
+                {"started_at", Rebuild::formatTime(state->started_at)}
+            };
+            if (state->status == "completed" || state->status == "failed") {
+                result["completed_at"] = Rebuild::formatTime(state->completed_at);
+            }
+            if (state->status == "failed" && !state->error_message.empty()) {
+                result["error"] = state->error_message;
+            }
+            return result;
         }
-        return {{"status", "idle"},
-                {"vectors_processed", 0},
-                {"total_vectors", 0},
-                {"percent_complete", 0.0}};
+        return {{"status", "idle"}};
     }
 };
 
@@ -2247,6 +2254,7 @@ inline void IndexManager::executeRebuildJob(const std::string& index_id,
         entry.updated = false;  // We just saved the new graph
 
         LOG_INFO(2051, index_id, "Rebuild completed: " << total_processed << " vectors rebuilt");
+        rebuild_.completeActiveRebuild(username);
 
     } catch (const std::exception& e) {
         LOG_ERROR(2052, index_id, "Rebuild failed: " << e.what());
@@ -2255,8 +2263,6 @@ inline void IndexManager::executeRebuildJob(const std::string& index_id,
         if (std::filesystem::exists(temp_path)) {
             std::filesystem::remove(temp_path);
         }
+        rebuild_.failActiveRebuild(username, e.what());
     }
-
-    // Always clear rebuild state
-    rebuild_.clearActiveRebuild(username);
 }

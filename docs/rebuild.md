@@ -55,16 +55,52 @@ All parameters are optional. Omitted parameters retain their current values.
 
 **GET** `/api/v1/index/{name}/rebuild/status`
 
+**Status values:**
+
+| Status | Meaning |
+|--------|---------|
+| `idle` | No rebuild has run for this index (or querying a different index) |
+| `in_progress` | Rebuild is currently running |
+| `completed` | Rebuild finished successfully |
+| `failed` | Rebuild failed (see `error` field) |
+
+**In progress:**
 ```json
 {
     "status": "in_progress",
     "vectors_processed": 45000,
     "total_vectors": 100000,
-    "percent_complete": 45.0
+    "percent_complete": 45.0,
+    "started_at": "2026-03-25T10:30:00Z"
 }
 ```
 
-Status is per-index — querying a different index than the one being rebuilt returns `"idle"`. When no rebuild is active for this index, `status` is `"idle"`.
+**Completed:**
+```json
+{
+    "status": "completed",
+    "vectors_processed": 100000,
+    "total_vectors": 100000,
+    "percent_complete": 100.0,
+    "started_at": "2026-03-25T10:30:00Z",
+    "completed_at": "2026-03-25T10:32:15Z"
+}
+```
+
+**Failed:**
+```json
+{
+    "status": "failed",
+    "vectors_processed": 45000,
+    "total_vectors": 100000,
+    "percent_complete": 45.0,
+    "started_at": "2026-03-25T10:30:00Z",
+    "completed_at": "2026-03-25T10:31:05Z",
+    "error": "Out of memory"
+}
+```
+
+Status is per-index. The `completed`/`failed` state persists until the next rebuild is started for that user.
 
 ---
 
