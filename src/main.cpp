@@ -875,7 +875,6 @@ int main(int argc, char** argv) {
                 }
 
                 float dense_rrf_weight = body.has("dense_rrf_weight") ? (float)body["dense_rrf_weight"].d() : settings::DEFAULT_DENSE_RRF_WEIGHT;
-                float sparse_rrf_weight = 1.0f - dense_rrf_weight;
                 float rrf_rank_constant = body.has("rrf_rank_constant") ? (float)body["rrf_rank_constant"].d() : settings::DEFAULT_RRF_RANK_CONSTANT;
                 LOG_DEBUG("Filter: " << filter_array.dump());
                 try {
@@ -889,7 +888,7 @@ int main(int argc, char** argv) {
                                                                     include_vectors,
                                                                     ef,
                                                                     dense_rrf_weight,
-                                                                    sparse_rrf_weight,
+                                                                    1.0f - dense_rrf_weight,
                                                                     rrf_rank_constant);
 
                     if(!search_response) {
