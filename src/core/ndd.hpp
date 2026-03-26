@@ -1348,7 +1348,6 @@ public:
     {
         try {
             const float kSparseRrfWeight = 1.0f - kDenseRrfWeight;
-            LOG_DEBUG("SPARSE_RRF_WEIGHT" << kSparseRrfWeight);
             auto& entry = getIndexEntry(index_id);
             entry.searchCount += k;
             const bool run_dense_search = kDenseRrfWeight > 0.0f && !query.empty();
