@@ -875,6 +875,9 @@ int main(int argc, char** argv) {
                 }
 
                 float dense_rrf_weight = body.has("dense_rrf_weight") ? (float)body["dense_rrf_weight"].d() : settings::DEFAULT_DENSE_RRF_WEIGHT;
+                if (dense_rrf_weight < 0.0f || dense_rrf_weight > 1.0f) {
+                    return json_error(400, "dense_rrf_weight must be between 0 and 1");
+                }
                 float rrf_rank_constant = body.has("rrf_rank_constant") ? (float)body["rrf_rank_constant"].d() : settings::DEFAULT_RRF_RANK_CONSTANT;
                 LOG_DEBUG("Filter: " << filter_array.dump());
                 try {
