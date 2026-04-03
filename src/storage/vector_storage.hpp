@@ -19,6 +19,7 @@ class VectorStore {
 private:
     MDBX_env* env_;
     MDBX_dbi dbi_;
+    std::string index_id_;
     std::string path_;
     size_t vector_dim_;
     ndd::quant::QuantizationLevel quant_level_;
@@ -27,10 +28,10 @@ private:
     void init_environment() {
         int rc = mdbx_env_create(&env_);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to create LMDB env");
+            throw std::runtime_error(std::string("Failed to create LMDB env: ") + mdbx_strerror(rc));
         }
 
-        // Set geometry for auto-grow: initial=8GB, growth=1GB, max=128GB
+        // Set geometry for auto-grow using the vector map size settings
         rc = mdbx_env_set_geometry(env_,
                                    -1,  // lower size bound (use default)
                                    1ULL << settings::VECTOR_MAP_SIZE_BITS,      // current/now size
@@ -39,38 +40,44 @@ private:
                                    -1,   // shrink threshold (use default)
                                    -1);  // pagesize (use default)
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to set geometry");
+            throw std::runtime_error(std::string("Failed to set geometry: ") + mdbx_strerror(rc));
         }
+
+        mdbx_env_set_maxdbs(env_, settings::MAX_NR_SUBINDEX);
 
         rc = mdbx_env_open(
                 env_, path_.c_str(), MDBX_WRITEMAP | MDBX_MAPASYNC | MDBX_NORDAHEAD, 0664);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to open environment");
+            // throw std::runtime_error("Failed to open environment");
+            throw std::runtime_error(std::string("Failed to open environment: ") + mdbx_strerror(rc));
+
         }
 
         MDBX_txn* txn;
         rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_READWRITE, &txn);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to begin transaction");
+            throw std::runtime_error(std::string("Failed to begin transaction: ") + mdbx_strerror(rc));
         }
 
-        rc = mdbx_dbi_open(txn, nullptr, MDBX_CREATE | MDBX_INTEGERKEY, &dbi_);
+        rc = mdbx_dbi_open(txn, settings::DEFAULT_SUBINDEX.c_str(), MDBX_CREATE | MDBX_INTEGERKEY, &dbi_);
         if(rc != MDBX_SUCCESS) {
             mdbx_txn_abort(txn);
-            throw std::runtime_error("Failed to open database");
+            throw std::runtime_error(std::string("Failed to open database: ") + mdbx_strerror(rc));
         }
 
         rc = mdbx_txn_commit(txn);
         if(rc != MDBX_SUCCESS) {
             throw std::runtime_error("Failed to commit transaction: "
-                                     + std::string(mdbx_strerror(rc)));
+                                        + std::string(mdbx_strerror(rc)));
         }
     }
 
 public:
     VectorStore(const std::string& path,
                 size_t vector_dim,
-                ndd::quant::QuantizationLevel quant_level) :
+                ndd::quant::QuantizationLevel quant_level,
+                const std::string& index_id) :
+        index_id_(index_id),
         path_(path),
         vector_dim_(vector_dim),
         quant_level_(quant_level) {
@@ -87,17 +94,21 @@ public:
     // Nested Cursor struct
 
     struct Cursor {
+        std::string index_id_;
         MDBX_txn* txn = nullptr;
         MDBX_cursor* cursor = nullptr;
         bool done = false;
 
-        Cursor(MDBX_env* env, MDBX_dbi dbi) {
-            if(mdbx_txn_begin(env, nullptr, MDBX_TXN_RDONLY, &txn) != MDBX_SUCCESS) {
-                throw std::runtime_error("LMDB txn begin failed");
+        Cursor(MDBX_env* env, MDBX_dbi dbi, const std::string& index_id) :
+            index_id_(index_id) {
+            int rc = mdbx_txn_begin(env, nullptr, MDBX_TXN_RDONLY, &txn);
+            if(rc != MDBX_SUCCESS) {
+                throw std::runtime_error(std::string("LMDB txn begin failed: ") + mdbx_strerror(rc));
             }
 
-            if(mdbx_cursor_open(txn, dbi, &cursor) != MDBX_SUCCESS) {
-                throw std::runtime_error("LMDB cursor open failed");
+            rc = mdbx_cursor_open(txn, dbi, &cursor);
+            if(rc != MDBX_SUCCESS) {
+                throw std::runtime_error(std::string("LMDB cursor open failed: ") + mdbx_strerror(rc));
             }
         }
 
@@ -116,7 +127,10 @@ public:
             }
 
             if(key.iov_len != sizeof(ndd::idInt)) {
-                printf("Invalid key size: %zu, expected: %zu\n", key.iov_len, sizeof(ndd::idInt));
+                LOG_ERROR(1601,
+                                index_id_,
+                                "Invalid key size " << key.iov_len << ", expected "
+                                                    << sizeof(ndd::idInt));
                 throw std::runtime_error("Invalid key size in LMDB entry");
             }
 
@@ -137,7 +151,7 @@ public:
         }
     };
 
-    Cursor getCursor() { return Cursor(env_, dbi_); }
+    Cursor getCursor() { return Cursor(env_, dbi_, index_id_); }
 
     void store_vector_bytes(ndd::idInt id, const std::vector<uint8_t>& vec) {
         store_vectors_batch({{id, vec}});
@@ -147,7 +161,7 @@ public:
         MDBX_txn* txn;
         int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_RDONLY, &txn);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to begin transaction");
+            throw std::runtime_error(std::string("Failed to begin transaction: ") + mdbx_strerror(rc));
         }
 
         try {
@@ -207,6 +221,40 @@ public:
         }
     }
 
+    // Batch fetch: retrieves multiple vectors in a single MDBX read transaction.
+    // labels: array of external numeric IDs to fetch
+    // buffers: pre-allocated flat buffer of size (count * bytes_per_vector_)
+    // success: output array of bool indicating which fetches succeeded
+    // Returns number of successful fetches
+    size_t get_vectors_batch_into(const ndd::idInt* labels, uint8_t* buffers,
+                                  bool* success, size_t count) const {
+        if(count == 0) return 0;
+
+        MDBX_txn* txn;
+        int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_RDONLY, &txn);
+        if(rc != MDBX_SUCCESS) {
+            for(size_t i = 0; i < count; i++) success[i] = false;
+            return 0;
+        }
+
+        size_t fetched = 0;
+        for(size_t i = 0; i < count; i++) {
+            MDBX_val key{const_cast<ndd::idInt*>(&labels[i]), sizeof(ndd::idInt)};
+            MDBX_val data;
+            rc = mdbx_get(txn, dbi_, &key, &data);
+            if(rc == MDBX_SUCCESS && data.iov_len == bytes_per_vector_) {
+                std::memcpy(buffers + i * bytes_per_vector_, data.iov_base, bytes_per_vector_);
+                success[i] = true;
+                fetched++;
+            } else {
+                success[i] = false;
+            }
+        }
+
+        mdbx_txn_abort(txn);
+        return fetched;
+    }
+
     // Batch operations with raw bytes
     void
     store_vectors_batch(const std::vector<std::pair<ndd::idInt, std::vector<uint8_t>>>& batch) {
@@ -239,14 +287,14 @@ public:
         MDBX_txn* txn;
         int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_READWRITE, &txn);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to begin transaction");
+            throw std::runtime_error(std::string("Failed to begin transaction: ") + mdbx_strerror(rc));
         }
 
         rc = write_batch(txn);
         // MDBX auto-grows, no manual resize needed
         if(rc != MDBX_SUCCESS) {
             mdbx_txn_abort(txn);
-            throw std::runtime_error("Failed to store vector");
+            throw std::runtime_error(std::string("Failed to store vector: ") + mdbx_strerror(rc));
         }
 
         try_commit(txn);
@@ -264,7 +312,7 @@ public:
         MDBX_txn* txn;
         int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_RDONLY, &txn);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to begin transaction");
+            throw std::runtime_error(std::string("Failed to begin transaction: ") + mdbx_strerror(rc));
         }
 
         try {
@@ -292,7 +340,7 @@ public:
         MDBX_txn* txn;
         int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_READWRITE, &txn);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to begin transaction");
+            throw std::runtime_error(std::string("Failed to begin transaction: ") + mdbx_strerror(rc));
         }
 
         try {
@@ -300,12 +348,12 @@ public:
 
             rc = mdbx_del(txn, dbi_, &key, nullptr);
             if(rc != MDBX_SUCCESS && rc != MDBX_NOTFOUND) {
-                throw std::runtime_error("Failed to delete vector data");
+                throw std::runtime_error(std::string("Failed to delete vector data: ") + mdbx_strerror(rc));
             }
 
             rc = mdbx_txn_commit(txn);
             if(rc != MDBX_SUCCESS) {
-                throw std::runtime_error("Failed to commit vector deletion");
+                throw std::runtime_error(std::string("Failed to commit vector deletion: ") + mdbx_strerror(rc));
             }
         } catch(...) {
             mdbx_txn_abort(txn);
@@ -332,7 +380,7 @@ private:
     void init_environment() {
         int rc = mdbx_env_create(&env_);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to create LMDB env");
+            throw std::runtime_error(std::string("Failed to create LMDB env: ") + mdbx_strerror(rc));
         }
 
         // Set geometry for auto-grow
@@ -345,7 +393,7 @@ private:
                 -1,                                            // shrink threshold (use default)
                 -1);                                           // pagesize (use default)
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to set geometry");
+            throw std::runtime_error(std::string("Failed to set geometry: ") + mdbx_strerror(rc));
         }
 
         rc = mdbx_env_open(env_,
@@ -353,19 +401,20 @@ private:
                            MDBX_NOSUBDIR | MDBX_WRITEMAP | MDBX_MAPASYNC | MDBX_NORDAHEAD,
                            0664);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to open environment");
+            // throw std::runtime_error("Failed to open environment");
+            throw std::runtime_error(std::string("Failed to open environment: ") + mdbx_strerror(rc));
         }
 
         MDBX_txn* txn;
         rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_READWRITE, &txn);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to begin transaction");
+            throw std::runtime_error(std::string("Failed to begin transaction: ") + mdbx_strerror(rc));
         }
 
         rc = mdbx_dbi_open(txn, nullptr, MDBX_CREATE | MDBX_INTEGERKEY, &dbi_);
         if(rc != MDBX_SUCCESS) {
             mdbx_txn_abort(txn);
-            throw std::runtime_error("Failed to open database");
+            throw std::runtime_error(std::string("Failed to open database: ") + mdbx_strerror(rc));
         }
 
         rc = mdbx_txn_commit(txn);
@@ -418,14 +467,14 @@ public:
         MDBX_txn* txn;
         int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_READWRITE, &txn);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to begin transaction");
+            throw std::runtime_error(std::string("Failed to begin transaction: ") + mdbx_strerror(rc));
         }
 
         rc = write_batch(txn);
         // MDBX auto-grows, no manual resize needed
         if(rc != MDBX_SUCCESS) {
             mdbx_txn_abort(txn);
-            throw std::runtime_error("Failed to store meta");
+            throw std::runtime_error(std::string("Failed to store meta: ") + mdbx_strerror(rc));
         }
 
         try_commit(txn);
@@ -436,7 +485,7 @@ public:
         MDBX_txn* txn;
         int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_RDONLY, &txn);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to begin transaction");
+            throw std::runtime_error(std::string("Failed to begin transaction: ") + mdbx_strerror(rc));
         }
 
         try {
@@ -462,7 +511,7 @@ public:
         MDBX_txn* txn;
         int rc = mdbx_txn_begin(env_, nullptr, MDBX_TXN_READWRITE, &txn);
         if(rc != MDBX_SUCCESS) {
-            throw std::runtime_error("Failed to begin transaction");
+            throw std::runtime_error(std::string("Failed to begin transaction: ") + mdbx_strerror(rc));
         }
 
         try {
@@ -470,12 +519,12 @@ public:
 
             rc = mdbx_del(txn, dbi_, &key, nullptr);
             if(rc != MDBX_SUCCESS && rc != MDBX_NOTFOUND) {
-                throw std::runtime_error("Failed to delete metadata");
+                throw std::runtime_error(std::string("Failed to delete metadata: ") + mdbx_strerror(rc));
             }
 
             rc = mdbx_txn_commit(txn);
             if(rc != MDBX_SUCCESS) {
-                throw std::runtime_error("Failed to commit metadata deletion");
+                throw std::runtime_error(std::string("Failed to commit metadata deletion: ") + mdbx_strerror(rc));
             }
         } catch(...) {
             mdbx_txn_abort(txn);
@@ -487,6 +536,7 @@ public:
 // Main storage interface combining vector and meta stores
 class VectorStorage {
 private:
+    std::string index_id_;
     std::unique_ptr<VectorStore> vector_store_;
     std::unique_ptr<MetaStore> meta_store_;
 
@@ -494,12 +544,14 @@ public:
     std::unique_ptr<Filter> filter_store_;
 
     VectorStorage(const std::string& base_path,
+                  const std::string& index_id,
                   size_t vector_dim,
-                  ndd::quant::QuantizationLevel quant_level) {
-        vector_store_ =
-                std::make_unique<VectorStore>(base_path + "/vectors", vector_dim, quant_level);
+                  ndd::quant::QuantizationLevel quant_level) :
+        index_id_(index_id) {
+        vector_store_ = std::make_unique<VectorStore>(
+                base_path + "/vectors", vector_dim, quant_level, index_id_);
         meta_store_ = std::make_unique<MetaStore>(base_path + "/meta");
-        filter_store_ = std::make_unique<Filter>(base_path + "/filters");
+        filter_store_ = std::make_unique<Filter>(base_path + "/filters", index_id_);
     }
     VectorStore::Cursor getCursor() { return vector_store_->getCursor(); }
     // Get numeric ids of matching filters
@@ -677,6 +729,12 @@ public:
 
     bool get_vector(ndd::idInt numeric_id, uint8_t* buffer) const {
         return vector_store_->get_vector_bytes(numeric_id, buffer);
+    }
+
+    // Batch fetch: multiple vectors in one MDBX txn
+    size_t get_vectors_batch_into(const ndd::idInt* labels, uint8_t* buffers,
+                                  bool* success, size_t count) const {
+        return vector_store_->get_vectors_batch_into(labels, buffers, success, count);
     }
 
     std::vector<std::pair<ndd::idInt, std::vector<uint8_t>>>
