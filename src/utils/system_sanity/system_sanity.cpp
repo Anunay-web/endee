@@ -145,33 +145,119 @@ static size_t read_cgroup_value(const char* path) {
     }
 }
 
+static bool parse_cgroup_line(const std::string& line,
+                              std::string& controllers,
+                              std::string& cgroup_path) {
+    const size_t first_colon = line.find(':');
+    if(first_colon == std::string::npos) return false;
+
+    const size_t second_colon = line.find(':', first_colon + 1);
+    if(second_colon == std::string::npos) return false;
+
+    controllers = line.substr(first_colon + 1, second_colon - first_colon - 1);
+    cgroup_path = line.substr(second_colon + 1);
+    return !cgroup_path.empty();
+}
+
+static bool controller_list_contains(const std::string& controllers, const char* controller) {
+    size_t start = 0;
+    while(start < controllers.size()) {
+        size_t end = controllers.find(',', start);
+        if(end == std::string::npos) {
+            end = controllers.size();
+        }
+        if(controllers.compare(start, end - start, controller) == 0) {
+            return true;
+        }
+        start = end + 1;
+    }
+    return false;
+}
+
+static bool read_current_cgroup_v2_path(std::string& cgroup_path) {
+    std::ifstream cgroup_file("/proc/self/cgroup");
+    if(!cgroup_file.is_open()) return false;
+
+    std::string line;
+    while(std::getline(cgroup_file, line)) {
+        std::string controllers;
+        std::string candidate_path;
+        if(parse_cgroup_line(line, controllers, candidate_path) && controllers.empty()) {
+            cgroup_path = candidate_path;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool read_current_cgroup_v1_path(const char* controller, std::string& cgroup_path) {
+    std::ifstream cgroup_file("/proc/self/cgroup");
+    if(!cgroup_file.is_open()) return false;
+
+    std::string line;
+    while(std::getline(cgroup_file, line)) {
+        std::string controllers;
+        std::string candidate_path;
+        if(parse_cgroup_line(line, controllers, candidate_path)
+           && controller_list_contains(controllers, controller)) {
+            cgroup_path = candidate_path;
+            return true;
+        }
+    }
+    return false;
+}
+
+static std::string build_cgroup_file_path(const char* mount_root,
+                                          const std::string& cgroup_path,
+                                          const char* file_name) {
+    if(cgroup_path.empty() || cgroup_path == "/") {
+        return std::string(mount_root) + "/" + file_name;
+    }
+    if(cgroup_path.front() == '/') {
+        return std::string(mount_root) + cgroup_path + "/" + file_name;
+    }
+    return std::string(mount_root) + "/" + cgroup_path + "/" + file_name;
+}
+
 /**
  * Get available memory in bytes, respecting cgroup limits.
  *
  * Priority:
- *   1. cgroup v2 (memory.max - memory.current)
- *   2. cgroup v1 (memory.limit_in_bytes - memory.usage_in_bytes)
+ *   1. current-process cgroup v2 (memory.max - memory.current)
+ *   2. current-process cgroup v1 (memory.limit_in_bytes - memory.usage_in_bytes)
  *   3. Host memory (macOS: host_statistics64, Linux: /proc/meminfo MemAvailable)
  */
 static size_t get_available_memory_bytes(std::string& source) {
-    // Try cgroup v2
-    size_t cg2_limit = read_cgroup_value("/sys/fs/cgroup/memory.max");
-    if(cg2_limit > 0) {
-        size_t cg2_usage = read_cgroup_value("/sys/fs/cgroup/memory.current");
-        source = "cgroup v2";
-        return (cg2_limit > cg2_usage) ? (cg2_limit - cg2_usage) : 0;
+    // Try the current process's cgroup v2 path.
+    std::string cg2_path;
+    if(read_current_cgroup_v2_path(cg2_path)) {
+        const std::string cg2_limit_path =
+                build_cgroup_file_path("/sys/fs/cgroup", cg2_path, "memory.max");
+        size_t cg2_limit = read_cgroup_value(cg2_limit_path.c_str());
+        if(cg2_limit > 0) {
+            const std::string cg2_usage_path =
+                    build_cgroup_file_path("/sys/fs/cgroup", cg2_path, "memory.current");
+            size_t cg2_usage = read_cgroup_value(cg2_usage_path.c_str());
+            source = "cgroup v2 (" + cg2_path + ")";
+            return (cg2_limit > cg2_usage) ? (cg2_limit - cg2_usage) : 0;
+        }
     }
 
-    // Try cgroup v1
-    size_t cg1_limit = read_cgroup_value("/sys/fs/cgroup/memory/memory.limit_in_bytes");
-    if(cg1_limit > 0) {
+    // Try the current process's cgroup v1 memory controller path.
+    std::string cg1_path;
+    if(read_current_cgroup_v1_path("memory", cg1_path)) {
+        const std::string cg1_limit_path = build_cgroup_file_path(
+                "/sys/fs/cgroup/memory", cg1_path, "memory.limit_in_bytes");
+        size_t cg1_limit = read_cgroup_value(cg1_limit_path.c_str());
         // cgroup v1 sets limit to a very large number when unlimited
         // (typically PAGE_COUNTER_MAX * PAGE_SIZE, around 2^63).
         // Treat anything above 1 PB as "unlimited".
         constexpr size_t CGROUP_V1_UNLIMITED_THRESHOLD = 1024ULL * TB;
-        if(cg1_limit < CGROUP_V1_UNLIMITED_THRESHOLD) {
-            size_t cg1_usage = read_cgroup_value("/sys/fs/cgroup/memory/memory.usage_in_bytes");
-            source = "cgroup v1";
+        if(cg1_limit > 0 && cg1_limit < CGROUP_V1_UNLIMITED_THRESHOLD) {
+            const std::string cg1_usage_path = build_cgroup_file_path(
+                    "/sys/fs/cgroup/memory", cg1_path, "memory.usage_in_bytes");
+            size_t cg1_usage = read_cgroup_value(cg1_usage_path.c_str());
+            source = "cgroup v1 (" + cg1_path + ")";
             return (cg1_limit > cg1_usage) ? (cg1_limit - cg1_usage) : 0;
         }
     }
