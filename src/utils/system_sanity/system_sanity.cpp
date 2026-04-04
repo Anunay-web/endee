@@ -387,7 +387,7 @@ bool run_startup_sanity_checks() {
     critical_pass &= check_open_files_limit();
 
     // Warning checks - logged but don't block startup
-    check_total_physical_memory();
+    // check_total_physical_memory();
     check_cpu_cores();
 
     if(critical_pass) {

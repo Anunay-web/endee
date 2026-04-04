@@ -72,7 +72,7 @@ namespace settings {
 
 
     //minimum bytes in filesystem before triggering out of storage sequence
-    constexpr size_t MINIMUM_REQUIRED_FS_BYTES = (1 * GB);
+    constexpr size_t MINIMUM_REQUIRED_FS_BYTES = (10 * GB);
 
     // System sanity check thresholds
     constexpr size_t DEFAULT_MINIMUM_REQUIRED_DRAM_MB = (10 * 1024);  // 10 GB in MB
