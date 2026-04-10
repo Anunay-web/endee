@@ -91,7 +91,7 @@ jobs:
               username: context.payload.comment.user.login,
             });
             const level   = perm.permission;
-            const allowed = ['admin'].includes(level);
+            const allowed = ['admin', 'write'].includes(level);
             core.setOutput('authorized', String(allowed));
  
             if (!allowed) {
@@ -648,20 +648,11 @@ jobs:
 
             # CHECK IF BENCHMARK SERVER CAN REACH ENDEE SERVER ON PORT 8080
             echo "CHECKING CONNECTIVITY TO ENDEE SERVER: $ENDEE_IP:8080"
-            CONNECTED=false
-            for i in $(seq 1 12); do
-              if nc -z -w 5 $ENDEE_IP 8080 2>/dev/null; then
-                echo "ENDEE SERVER IS REACHABLE ON PORT 8080"
-                CONNECTED=true
-                break
-              fi
-              echo "Attempt $i/12 — not ready yet, retrying in 10s..."
-              sleep 10
-            done
-            if [ "$CONNECTED" = false ]; then
+            if ! nc -zv -w 5 $ENDEE_IP 8080 2>&1; then
               echo "ENDEE SERVER PORT 8080 NOT REACHABLE"
               exit 1
             fi
+            echo "ENDEE SERVER IS REACHABLE ON PORT 8080"
 
             cd "\$HOME/benchmark"
 
