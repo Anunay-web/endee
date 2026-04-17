@@ -46,6 +46,7 @@ public:
                          std::stop_token st = {}) {
         struct archive* a = archive_write_new();
         archive_write_set_format_pax_restricted(a);
+        archive_write_add_filter_zstd(a);
 
         if(archive_write_open_filename(a, archive_path.string().c_str()) != ARCHIVE_OK) {
             error_msg = archive_error_string(a);
@@ -103,7 +104,7 @@ public:
 
         archive_read_support_format_all(a);
         archive_read_support_filter_all(a);
-        archive_write_disk_set_options(ext, ARCHIVE_EXTRACT_TIME | ARCHIVE_EXTRACT_PERM);
+        archive_write_disk_set_options(ext, ARCHIVE_EXTRACT_TIME | ARCHIVE_EXTRACT_PERM | ARCHIVE_EXTRACT_SPARSE);
         archive_write_disk_set_standard_lookup(ext);
 
         if(archive_read_open_filename(a, archive_path.string().c_str(), 10240) != ARCHIVE_OK) {
@@ -274,7 +275,7 @@ public:
             return result;
         }
 
-        std::string backup_tar = getUserBackupDir(username) + "/" + backup_name + ".tar";
+        std::string backup_tar = getUserBackupDir(username) + "/" + backup_name + ".tar.zst";
 
         if(std::filesystem::exists(backup_tar)) {
             std::filesystem::remove(backup_tar);
