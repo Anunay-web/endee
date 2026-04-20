@@ -14,6 +14,10 @@
 #include <archive.h>
 #include <archive_entry.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+
 #include "json/nlohmann_json.hpp"
 #include "index_meta.hpp"
 #include "settings.hpp"
@@ -30,6 +34,62 @@ private:
     std::string data_dir_;
     std::unordered_map<std::string, ActiveBackup> active_user_backups_;
     mutable std::mutex active_user_backups_mutex_;
+
+    bool writeFileToArchive(struct archive* a, struct archive_entry* e,
+                            const std::filesystem::path& file_path,
+                            std::string& error_msg) {
+        int fd = open(file_path.c_str(), O_RDONLY);
+        if (fd < 0) {
+            error_msg = "Failed to open file: " + file_path.string();
+            return false;
+        }
+
+        off_t file_size = std::filesystem::file_size(file_path);
+        archive_entry_set_size(e, file_size);
+
+        // Map data regions using SEEK_HOLE/SEEK_DATA
+        off_t pos = 0;
+        while (pos < file_size) {
+            off_t data_start = lseek(fd, pos, SEEK_DATA);
+            if (data_start < 0) break;  // no more data regions
+
+            off_t hole_start = lseek(fd, data_start, SEEK_HOLE);
+            if (hole_start < 0) hole_start = file_size;
+
+            archive_entry_sparse_add_entry(e, data_start, hole_start - data_start);
+            pos = hole_start;
+        }
+
+        if (archive_write_header(a, e) != ARCHIVE_OK) {
+            error_msg = archive_error_string(a);
+            close(fd);
+            return false;
+        }
+
+        // Write only data regions
+        char buffer[65536];
+        pos = 0;
+        while (pos < file_size) {
+            off_t data_start = lseek(fd, pos, SEEK_DATA);
+            if (data_start < 0) break;
+
+            off_t hole_start = lseek(fd, data_start, SEEK_HOLE);
+            if (hole_start < 0) hole_start = file_size;
+
+            off_t region_offset = data_start;
+            while (region_offset < hole_start) {
+                size_t to_read = std::min((off_t)sizeof(buffer), hole_start - region_offset);
+                ssize_t bytes_read = pread(fd, buffer, to_read, region_offset);
+                if (bytes_read <= 0) break;
+                archive_write_data(a, buffer, bytes_read);
+                region_offset += bytes_read;
+            }
+            pos = hole_start;
+        }
+
+        close(fd);
+        return true;
+    }
 
 public:
     BackupStore(const std::string& data_dir)
@@ -68,24 +128,16 @@ public:
                 std::filesystem::path rel_path =
                         std::filesystem::relative(entry.path(), source_dir.parent_path());
                 archive_entry_set_pathname(e, rel_path.string().c_str());
-                archive_entry_set_size(e, std::filesystem::file_size(entry.path()));
                 archive_entry_set_filetype(e, AE_IFREG);
                 archive_entry_set_perm(e, 0644);
 
-                if(archive_write_header(a, e) != ARCHIVE_OK) {
-                    error_msg = archive_error_string(a);
+                if(!writeFileToArchive(a, e, entry.path(), error_msg)) {
                     archive_entry_free(e);
                     archive_write_close(a);
                     archive_write_free(a);
                     return false;
                 }
 
-                std::ifstream file(entry.path(), std::ios::binary);
-                char buffer[8192];
-                while(file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
-                    archive_write_data(a, buffer, file.gcount());
-                }
-                file.close();
                 archive_entry_free(e);
             }
         }
