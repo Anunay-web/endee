@@ -67,7 +67,7 @@ private:
         }
 
         // Write only data regions
-        char buffer[65536];
+        char buffer[262144]; // 256KB — one IOP on GP3/GCP PD
         pos = 0;
         while (pos < file_size) {
             off_t data_start = lseek(fd, pos, SEEK_DATA);
