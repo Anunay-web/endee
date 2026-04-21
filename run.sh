@@ -8,7 +8,7 @@ error() { printf "[ERROR] %s\n" "$*" >&2; }
 NDD_DATA_DIR="./data"
 BINARY_FILE=""
 NDD_AUTH_TOKEN=""
-NDD_MIN_DRAM_MB=4096
+NDD_MIN_DRAM_MB=2048
 
 
 print_help() {
