@@ -172,7 +172,7 @@ jobs:
           git clone https://x-access-token:${{ secrets.PAT }}@github.com/Endee-Pro/ndd-docker.git
           cd ndd-docker
 
-          git checkout omnish/release-note-sync
+          git checkout main
           mkdir -p build
 
           # copy all 4 binaries at once
